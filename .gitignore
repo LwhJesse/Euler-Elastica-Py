@@ -1,0 +1,13 @@
+.obsidian/
+__pycache__/
+*.py[cod]
+*$py.class
+
+venv-ops/
+venv/
+env/
+.env
+
+
+.DS_Store
+Thumbs.db
