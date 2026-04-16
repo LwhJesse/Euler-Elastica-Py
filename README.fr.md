@@ -1,4 +1,4 @@
-### 🇫🇷 French (`README_fr.md`)
+### 🇫🇷 French (`README.fr.md`)
 
 # Analyseur de Poutres Non-linéaires & Euler Elastica
 [English](README.md) | [Français](README.fr.md) |  [Español](README.es.md) |[繁體中文](README.zh-TW.md) | [简体中文](README.zh-CN.md) | [Deutsch](README.de.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
