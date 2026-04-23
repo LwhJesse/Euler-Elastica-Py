@@ -44,7 +44,7 @@ $$ \kappa = \frac{M(x)}{EI} = \frac{w''}{(1 + (w')^2)^{3/2}} $$
 
 本项目是一系列计算性Python脚本的集合。一旦满足依赖关系，您就可以直接运行它们。
 
-### 选项A：标准设置 (Windows / macOS / 基于Debian / 基于Red Hat)
+### 选项A：标准设置 (Windows / macOS / Debian系 / Red Hat系)
 对于标准操作系统环境，使用虚拟环境是可选的，但建议使用以避免依赖冲突。
 ```bash
 # 1. 克隆仓库
