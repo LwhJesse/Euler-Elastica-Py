@@ -27,9 +27,11 @@ def run_beam_opensees(
         raise ImportError("openseespy not installed.")
 
     old_stderr = None
+    stderr_sink = None
     if not verbose:
         old_stderr = sys.stderr
-        sys.stderr = open(os.devnull, 'w')
+        stderr_sink = open(os.devnull, 'w')
+        sys.stderr = stderr_sink
 
     try:
         ops.wipe()
@@ -169,6 +171,8 @@ def run_beam_opensees(
     finally:
         if old_stderr is not None:
             sys.stderr = old_stderr
+        if stderr_sink is not None:
+            stderr_sink.close()
 
 def get_fem_result(params):
     cid = params.get("CASE_ID", 10)
