@@ -1,17 +1,34 @@
 """
-Automated Boundary Search Script (Multiprocessing with Live Dashboard).
+Automated Boundary Search Script (Hybrid Multiprocessing with Live Dashboard).
 
-Utilizes all available CPU cores to compute the nonlinear critical boundaries 
-concurrently. Intercepts standard output from child processes to render a 
-real-time, btop-style monitoring dashboard using the 'rich' library.
+Runs all ten nonlinear 5% FEM boundary/error analyses. Single-variable cases use
+the original case-level multiprocessing dashboard, while the heavy bi-variable
+cases (3, 7, 9) use the CPU-max chunk scheduler from run_boundary_cpu_max.py.
 """
 
-import sys
 import os
+
+# Limit nested BLAS/OpenMP threading before importing NumPy/SciPy/OpenSees paths.
+for _name in (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+):
+    os.environ[_name] = "1"
+os.environ.setdefault("MPLBACKEND", "Agg")
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/euler_elastica_matplotlib")
+os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
+
+import sys
 import multiprocessing
 import time
 from core import config
 from critical_boundary_fem import AdaptiveFemAnalyzer
+from run_boundary_cpu_max import main as run_cpu_max_boundary
+
+DUAL_VAR_CASES = [3, 7, 9]
+SINGLE_VAR_CASES = [cid for cid in range(1, 11) if cid not in DUAL_VAR_CASES]
 
 # Try importing rich for the UI dashboard
 try:
@@ -63,12 +80,9 @@ def worker_task(args):
     
     try:
         analyzer = AdaptiveFemAnalyzer(tolerance_percent=5.0)
-        if cid in[3, 7, 9]:
-            # Dual-variable cases: Generate 2D boundary curve
-            analyzer.run(max_anchor_points=90)
-        else:
-            # Single-variable cases: Generate error evolution curve
-            analyzer.run()
+        # Single-variable cases: Generate error evolution curve.
+        # Bi-variable cases are handled by the CPU-max chunk scheduler below.
+        analyzer.run()
             
         queue.put((cid, "✅ Computation complete."))
     except Exception as e:
@@ -83,9 +97,11 @@ if __name__ == '__main__':
     manager = multiprocessing.Manager()
     queue = manager.Queue()
     
-    # Setup multiprocess arguments
-    cases = [(cid, queue) for cid in range(1, 11)]
+    # Setup multiprocess arguments for the single-variable cases only.
+    cases = [(cid, queue) for cid in SINGLE_VAR_CASES]
     status_dict = {cid: "⏳ Waiting for CPU allocation..." for cid in range(1, 11)}
+    for cid in DUAL_VAR_CASES:
+        status_dict[cid] = "⏳ Queued for CPU-max chunk scheduler..."
     
     def generate_dashboard():
         """Generates the dynamic Rich table UI."""
@@ -118,7 +134,7 @@ if __name__ == '__main__':
     # Reserve 1 CPU core to prevent system freeze during intense FEM computation
     cores = max(1, multiprocessing.cpu_count() - 1)
     
-    # Start async multiprocessing pool
+    # Start async multiprocessing pool for single-variable cases.
     pool = multiprocessing.Pool(processes=cores)
     result_async = pool.map_async(worker_task, cases)
     
@@ -141,6 +157,25 @@ if __name__ == '__main__':
         
     pool.close()
     pool.join()
+
+    for cid in DUAL_VAR_CASES:
+        status_dict[cid] = "🚀 Running CPU-max chunk scheduler..."
+
+    console.print("\n[bold cyan]Starting CPU-max bi-variable boundary scheduler for Cases 3, 7, and 9...")
+    rc = run_cpu_max_boundary([
+        "--cases", "3", "7", "9",
+        "--max-anchor-points", "90",
+        "--chunk-size", "5",
+        "--workers", "auto",
+        "--start-method", "forkserver",
+        "--suffix", "",
+    ])
+    if rc != 0:
+        console.print(f"[bold red]CPU-max boundary scheduler failed with exit code {rc}.")
+        sys.exit(rc)
+
+    for cid in DUAL_VAR_CASES:
+        status_dict[cid] = "✅ CPU-max boundary complete."
     
     end_time = time.time()
     console.print(f"\n[bold green]Cluster execution finished successfully. Total elapsed time: {(end_time - start_time)/60:.2f} minutes.")
