@@ -3,22 +3,30 @@ FEM Critical Boundary Analysis Script.
 
 Employs adaptive root-finding algorithms (Brent's method) to locate the precise 
 load thresholds where linear Analytical theory deviates from the FEM Corotational 
-solution by a specified relative error tolerance (default: 5.0%).
+solution by a configured error tolerance.
 """
 
+from copy import deepcopy
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-from scipy.interpolate import interp1d
 from scipy.optimize import brentq
 
 from core import config
+from core.metrics import compute_error_metric
 from core.opensees_beam import get_fem_result
 from core.analysis_solve import AnalysisFunc
 
 class AdaptiveFemAnalyzer:
-    def __init__(self, tolerance_percent=5.0):
-        self.x0 = tolerance_percent
+    FAILURE_SENTINEL_ERROR = 999.0
+
+    def __init__(self, tolerance_percent=None, metric_config=None):
+        self.x0 = (
+            config.BOUNDARY_TOLERANCE_PERCENT
+            if tolerance_percent is None
+            else tolerance_percent
+        )
+        self.metric_config = deepcopy(metric_config or config.ERROR_METRIC)
         self.p = config.PARAMS.copy()
         self.output_dir = Path("results/boundary_analysis").resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -38,40 +46,55 @@ class AdaptiveFemAnalyzer:
             10: {'load': 'q',  'two_var': False}
         }
 
-    def _get_max_relative_error(self, p_current):
-        """Computes the maximum relative deflection error between FEM and Analytical solutions."""
+    @property
+    def metric_label(self):
+        return self.metric_config.get("label", self.metric_config.get("name", "Metric Error"))
+
+    def _get_analysis_result(self, p_current):
+        method_name = f"generate_situation_{p_current['CASE_ID']}_data"
+        solver_method = getattr(self.solver, method_name)
+        return solver_method(
+            E=p_current["E"], I=p_current["I"], l=p_current["L"],
+            q=p_current.get("q", 0), F=p_current.get("F", 0),
+            M_e=p_current.get("M_e", 0), a=p_current.get("a", 0),
+            num_points=p_current.get("sample_n", 1000)
+        )
+
+    def _ordered_solution_pair(self, df_fem, df_ana):
+        solutions = {
+            "fem": df_fem,
+            "analysis": df_ana,
+            "analytical": df_ana,
+        }
+        ref_name = self.metric_config.get("reference", "fem")
+        cmp_name = self.metric_config.get("candidate", "analysis")
+        try:
+            return solutions[ref_name], solutions[cmp_name]
+        except KeyError as exc:
+            raise ValueError(
+                f"unsupported metric solution role {exc.args[0]!r}; "
+                "expected 'fem' or 'analysis'"
+            ) from exc
+
+    def _get_metric_error(self, p_current):
+        """Computes the configured boundary-search metric between FEM and analytical solutions."""
         try:
             df_fem = get_fem_result(p_current)
         except Exception:
-            return 999.0 # Treat OpenSees divergence as infinite error
+            # Failure sentinel for Brent bracket expansion after FEM divergence.
+            # This is not a valid sampled metric value.
+            return self.FAILURE_SENTINEL_ERROR
 
-        method_name = f"generate_situation_{p_current['CASE_ID']}_data"
-        solver_method = getattr(self.solver, method_name)
-        df_ana = solver_method(
-            E=p_current["E"], I=p_current["I"], l=p_current["L"], 
-            q=p_current.get("q", 0), F=p_current.get("F", 0), 
-            M_e=p_current.get("M_e", 0), a=p_current.get("a", 0),
-            num_points=1000
-        )
+        df_ana = self._get_analysis_result(p_current)
+        df_ref, df_cmp = self._ordered_solution_pair(df_fem, df_ana)
+        metric_config = deepcopy(self.metric_config)
+        metric_config.setdefault("EI", p_current["E"] * p_current["I"])
 
-        s_fem = df_fem['s'].values if 's' in df_fem.columns else np.linspace(0, p_current["L"], len(df_fem))
-        w_fem = df_fem['w'].values
-        
-        f_ana = interp1d(df_ana['s'].values, df_ana['w'].values, kind='linear', fill_value="extrapolate")
-        w_ana_aligned = f_ana(s_fem)
+        return compute_error_metric(df_ref, df_cmp, p_current["L"], metric_config)
 
-        max_w = np.max(np.abs(w_fem))
-        
-        # Physical truncation deadband: ignores numerical discretization noise at near-zero loads
-        if max_w < 1e-4: 
-            return 0.0
-            
-        if np.isnan(max_w) or max_w > 1.0:
-            return 999.0
-            
-        # Add a 1e-5 (0.01 mm) baseline floor to prevent division by zero in floating point operations
-        rel_err = np.max(np.abs(w_fem - w_ana_aligned) / (max_w + 1e-5)) * 100.0
-        return rel_err
+    def _get_max_relative_error(self, p_current):
+        """Compatibility wrapper; new boundary logic uses the configured metric."""
+        return self._get_metric_error(p_current)
 
     def find_critical_load_fast(self, case_id, load_var_name, fixed_a=None, prev_crit=None):
         """Efficient root-finding implementation using Brent's method to identify critical thresholds."""
@@ -85,7 +108,7 @@ class AdaptiveFemAnalyzer:
             # Isolate the target load variable while zeroing out others
             for k in['F', 'M_e', 'q']: p_current[k] = 0.0
             p_current[load_var_name] = load_val
-            err = self._get_max_relative_error(p_current)
+            err = self._get_metric_error(p_current)
             return err - self.x0
 
         # Define load orientation and bracket boundaries
@@ -126,6 +149,7 @@ class AdaptiveFemAnalyzer:
 
         print("-" * 50)
         print(f"FEM Boundary Analysis (CASE_ID = {case_id}, Tolerance = {self.x0}%)")
+        print(f"Metric: {self.metric_config.get('name')} | Label: {self.metric_label}")
         print(f"Dominant Var: {load_var_name} | Mode: {'Bi-variable' if is_two_var else 'Single-variable'}")
         print("-" * 50 + "\n")
 
@@ -156,13 +180,13 @@ class AdaptiveFemAnalyzer:
 
             # Bi-variable plotting routine
             plt.figure(figsize=(10, 6))
-            plt.plot(a_values, critical_loads, 'r-', lw=3, label=f'Critical Boundary ($x_0$={self.x0}%)')
+            plt.plot(a_values, critical_loads, 'r-', lw=3, label=f'Critical Boundary ({self.x0:g}% {self.metric_label})')
             
             y_extreme = min(critical_loads) * 1.2 if min(critical_loads) < 0 else max(critical_loads) * 1.2
             plt.fill_between(a_values, critical_loads, y_extreme, color='#ffcccc', alpha=0.5, label='Nonlinear Zone (Danger)')
             plt.fill_between(a_values, 0, critical_loads, color='#e6f2e6', alpha=0.5, label='Linear Zone (Safe)')
             
-            plt.title(f'Case {case_id}: FEM Critical {load_var_name} vs Load Position $a$')
+            plt.title(f'Case {case_id}: FEM Critical {load_var_name} vs Load Position $a$ ({self.metric_label})')
             plt.xlabel('Load Position $a$ (m)')
             plt.ylabel(f'Critical Load {load_var_name}')
             plt.grid(True, linestyle='--')
@@ -186,9 +210,9 @@ class AdaptiveFemAnalyzer:
             while True:
                 p_test[load_var_name] = max_load
                 p_test["CASE_ID"] = case_id
-                err = self._get_max_relative_error(p_test)
+                err = self._get_metric_error(p_test)
                 
-                if err >= self.x0 * 1.2 or err == 999.0:
+                if err >= self.x0 * 1.2 or err == self.FAILURE_SENTINEL_ERROR:
                     break
                 if abs(max_load) > 1e7:
                     break
@@ -203,8 +227,8 @@ class AdaptiveFemAnalyzer:
                     err_arr.append(0.0)
                     continue
                 p_test[load_var_name] = val
-                err = self._get_max_relative_error(p_test)
-                err_arr.append(err if err != 999.0 else np.nan)
+                err = self._get_metric_error(p_test)
+                err_arr.append(err if err != self.FAILURE_SENTINEL_ERROR else np.nan)
                 
             # 3. Exact computation of the critical intersection point
             exact_crit = self.find_critical_load_fast(case_id, load_var_name, fixed_a=self.p.get("L", 0.3)/2)
@@ -215,7 +239,7 @@ class AdaptiveFemAnalyzer:
             ax.fill_between(load_arr, 0, self.x0, color='#e6f2e6', alpha=0.5, label='Linear Zone (Safe)')
             ax.fill_between(load_arr, self.x0, max(err_arr + [self.x0*1.5]), color='#ffcccc', alpha=0.5, label='Nonlinear Zone (Danger)')
             
-            ax.plot(load_arr, err_arr, 'b-', lw=3, label='FEM vs Analytical Error (%)')
+            ax.plot(load_arr, err_arr, 'b-', lw=3, label=f'FEM vs Analytical {self.metric_label} (%)')
             ax.axhline(y=self.x0, color='red', linestyle='--', lw=2, label=f'Tolerance Threshold ({self.x0}%)')
             
             if exact_crit != 0.0 and abs(exact_crit) <= abs(max_load):
@@ -235,9 +259,9 @@ class AdaptiveFemAnalyzer:
                             bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="green", alpha=0.9),
                             zorder=10)
                 
-            ax.set_title(f'Case {case_id}: Relative Error Evolution vs Applied Load ({load_var_name})')
+            ax.set_title(f'Case {case_id}: {self.metric_label} vs Applied Load ({load_var_name})')
             ax.set_xlabel(f'Applied Load {load_var_name}')
-            ax.set_ylabel('Relative Deflection Error (%)')
+            ax.set_ylabel(f'{self.metric_label} (%)')
             ax.grid(True, linestyle='--')
             
             # Reposition legend outside the plot bounding box
@@ -252,5 +276,5 @@ class AdaptiveFemAnalyzer:
             plt.close(fig)
 
 if __name__ == "__main__":
-    analyzer = AdaptiveFemAnalyzer(tolerance_percent=5.0)
+    analyzer = AdaptiveFemAnalyzer()
     analyzer.run(max_anchor_points=150)

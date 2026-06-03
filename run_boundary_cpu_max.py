@@ -29,9 +29,10 @@ from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
+from core import config
 
 DEFAULT_CASES = [3, 7, 9]
-TOLERANCE_PERCENT = 5.0
+TOLERANCE_PERCENT = config.BOUNDARY_TOLERANCE_PERCENT
 OUTPUT_DIR = Path("results/boundary_analysis").resolve()
 
 _WORKER_INDEX = None
@@ -88,7 +89,6 @@ def _case_bc_type(case_id):
 
 
 def _make_analyzer(case_id):
-    from core import config
     from critical_boundary_fem import AdaptiveFemAnalyzer
 
     config.PARAMS["CASE_ID"] = case_id
@@ -401,7 +401,7 @@ def _write_case_outputs(case_id, rows, load_var, suffix):
         critical_loads,
         "r-",
         lw=3,
-        label=f"Critical Boundary ($x_0$={TOLERANCE_PERCENT}%)",
+        label=f"Critical Boundary ({TOLERANCE_PERCENT:g}% {config.ERROR_METRIC.get('label', 'Metric Error')})",
     )
 
     y_extreme = (
@@ -426,7 +426,10 @@ def _write_case_outputs(case_id, rows, load_var, suffix):
         label="Linear Zone (Safe)",
     )
 
-    plt.title(f"Case {case_id}: FEM Critical {load_var} vs Load Position $a$")
+    plt.title(
+        f"Case {case_id}: FEM Critical {load_var} vs Load Position $a$ "
+        f"({config.ERROR_METRIC.get('label', 'Metric Error')})"
+    )
     plt.xlabel("Load Position $a$ (m)")
     plt.ylabel(f"Critical Load {load_var}")
     plt.grid(True, linestyle="--")

@@ -16,7 +16,8 @@ but its parameters are consumed differently depending on the execution mode:
 3. Boundary Search Scripts (`critical_boundary_fem.py`, `run_multiprocess.py`):
    - Reads the base geometry and mesh settings.
    - IGNORES the static load values (q, F, M_e) as the root-finding algorithm 
-     dynamically calculates the exact loads that trigger a 5% nonlinear error.
+     dynamically calculates the exact loads that trigger the configured boundary
+     error tolerance.
    - Multiprocess mode additionally overrides the CASE_ID to scan all 10 cases.
 """
 
@@ -70,3 +71,28 @@ PARAMS["A"] = PARAMS["b"] * PARAMS["h"]              # Cross-sectional area (m^2
 
 # Automatically infer Boundary Condition Type
 PARAMS["BC_TYPE"] = "cantilever" if PARAMS["CASE_ID"] <= 4 else "simply_supported"
+
+# =============================================================================
+# Boundary Search Error Metric Configuration
+# =============================================================================
+
+BOUNDARY_TOLERANCE_PERCENT = 5.0
+
+ERROR_METRIC = {
+    "name": "industrial_centerline_shape",
+    "reference": "fem",
+    "candidate": "analysis",
+    "grid_n": 5000,
+    "epsilon": 1e-14,
+    "curvature_source": "theta_gradient",
+    "weights": {
+        "position": 1.0,
+        "tangent": 0.5,
+        "curvature": 0.25,
+    },
+    "local_weights": {
+        "tangent": 0.75,
+        "curvature": 0.5,
+    },
+    "label": "Industrial Centerline Shape Error",
+}

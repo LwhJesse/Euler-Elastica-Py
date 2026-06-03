@@ -1,9 +1,10 @@
 """
 Automated Boundary Search Script (Hybrid Multiprocessing with Live Dashboard).
 
-Runs all ten nonlinear 5% FEM boundary/error analyses. Single-variable cases use
-the original case-level multiprocessing dashboard, while the heavy bi-variable
-cases (3, 7, 9) use the CPU-max chunk scheduler from run_boundary_cpu_max.py.
+Runs all ten configured-tolerance FEM boundary/error analyses. Single-variable
+cases use the original case-level multiprocessing dashboard, while the heavy
+bi-variable cases (3, 7, 9) use the CPU-max chunk scheduler from
+run_boundary_cpu_max.py.
 """
 
 import os
@@ -79,7 +80,7 @@ def worker_task(args):
     queue.put((cid, f"[PID {os.getpid()}] Initializing solver..."))
     
     try:
-        analyzer = AdaptiveFemAnalyzer(tolerance_percent=5.0)
+        analyzer = AdaptiveFemAnalyzer(tolerance_percent=config.BOUNDARY_TOLERANCE_PERCENT)
         # Single-variable cases: Generate error evolution curve.
         # Bi-variable cases are handled by the CPU-max chunk scheduler below.
         analyzer.run()
